@@ -12,10 +12,37 @@ chromium.use(StealthPlugin());
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 
-const server = new McpServer({
-	name: "web-fetch",
-	version: "1.0.0",
-});
+function createServer() {
+	const server = new McpServer({
+		name: "web-fetch",
+		version: "1.0.0",
+	});
+
+	server.tool(
+		"fetch",
+		"Fetches a URL and returns the fully rendered HTML content after JavaScript execution",
+		{
+			url: z.string().url().describe("The URL to fetch"),
+			waitTime: z.number().optional().default(3000).describe("Time in ms to wait after page load for JS to execute (default: 3000)"),
+		},
+		async ({url, waitTime}) => {
+			try {
+				const html = await fetchPage(url, waitTime);
+				return {
+					content: [{type: "text", text: html}],
+				};
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return {
+					content: [{type: "text", text: `Error fetching page: ${message}`}],
+					isError: true,
+				};
+			}
+		}
+	);
+
+	return server;
+}
 
 //Realistic user agents for rotation
 const USER_AGENTS = [
@@ -133,28 +160,6 @@ async function fetchPage(url: string, waitTime: number = 3000): Promise<string> 
 	}
 }
 
-server.tool(
-	"fetch",
-	"Fetches a URL and returns the fully rendered HTML content after JavaScript execution",
-	{
-		url: z.string().url().describe("The URL to fetch"),
-		waitTime: z.number().optional().default(3000).describe("Time in ms to wait after page load for JS to execute (default: 3000)"),
-	},
-	async ({url, waitTime}) => {
-		try {
-			const html = await fetchPage(url, waitTime);
-			return {
-				content: [{type: "text", text: html}],
-			};
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			return {
-				content: [{type: "text", text: `Error fetching page: ${message}`}],
-				isError: true,
-			};
-		}
-	}
-);
 
 async function main() {
 	const app = express();
@@ -173,6 +178,8 @@ async function main() {
 		const sessionId = transport.sessionId;
 		console.log("Session ID:", sessionId);
 		transports.set(sessionId, transport);
+
+		const server = createServer();
 
 		res.on("close", () => {
 			console.log("SSE connection closed:", sessionId);

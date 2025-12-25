@@ -9,6 +9,7 @@ MCP server that fetches web pages with full JavaScript rendering and stealth mea
 - Randomized user agents and viewports
 - Bypasses robots.txt
 - Returns raw HTML after JS execution
+- HTTP/SSE transport for remote deployment
 
 ## Installation
 
@@ -18,20 +19,29 @@ npx playwright install chromium
 npm run build
 ```
 
-## Usage with Claude Desktop
+## Running
 
-Add to your `claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "web-fetch": {
-      "command": "node",
-      "args": ["/path/to/mcp-web-fetch/dist/index.js"]
-    }
-  }
-}
+```bash
+npm start
+# or with custom port
+PORT=8080 npm start
 ```
+
+Default port is 3000.
+
+## Usage with claude.ai
+
+In claude.ai's MCP settings, add your server URL:
+
+```
+https://your-server.example.com/sse
+```
+
+## Endpoints
+
+- `GET /sse` - SSE endpoint for MCP connection
+- `POST /messages` - Message handler for MCP
+- `GET /health` - Health check
 
 ## Tool
 

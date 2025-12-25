@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 import {McpServer} from "@modelcontextprotocol/sdk/server/mcp.js";
-import {StdioServerTransport} from "@modelcontextprotocol/sdk/server/stdio.js";
+import {SSEServerTransport} from "@modelcontextprotocol/sdk/server/sse.js";
+import cors from "cors";
+import express from "express";
 import {chromium} from "playwright-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import {z} from "zod";
 
 //Apply stealth plugin to playwright
 chromium.use(StealthPlugin());
+
+const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 
 const server = new McpServer({
 	name: "web-fetch",
@@ -153,8 +157,47 @@ server.tool(
 );
 
 async function main() {
-	const transport = new StdioServerTransport();
-	await server.connect(transport);
+	const app = express();
+	app.use(cors());
+
+	//Store transports by session ID
+	const transports = new Map<string, SSEServerTransport>();
+
+	//SSE endpoint for MCP
+	app.get("/sse", async (_req, res) => {
+		const transport = new SSEServerTransport("/messages", res);
+		const sessionId = transport.sessionId;
+		transports.set(sessionId, transport);
+
+		res.on("close", () => {
+			transports.delete(sessionId);
+		});
+
+		await server.connect(transport);
+	});
+
+	//Message endpoint for MCP
+	app.post("/messages", express.json(), async (req, res) => {
+		const sessionId = req.query.sessionId as string;
+		const transport = transports.get(sessionId);
+
+		if (!transport) {
+			res.status(404).json({error: "Session not found"});
+			return;
+		}
+
+		await transport.handlePostMessage(req, res);
+	});
+
+	//Health check
+	app.get("/health", (_req, res) => {
+		res.json({status: "ok"});
+	});
+
+	app.listen(PORT, () => {
+		console.log(`MCP web-fetch server running on http://localhost:${PORT}`);
+		console.log(`SSE endpoint: http://localhost:${PORT}/sse`);
+	});
 }
 
 main().catch(console.error);

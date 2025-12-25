@@ -158,30 +158,39 @@ server.tool(
 
 async function main() {
 	const app = express();
-	app.use(cors());
+	app.use(cors({
+		origin: true,
+		credentials: true,
+	}));
 
 	//Store transports by session ID
 	const transports = new Map<string, SSEServerTransport>();
 
 	//SSE endpoint for MCP
 	app.get("/sse", async (_req, res) => {
+		console.log("SSE connection attempt");
 		const transport = new SSEServerTransport("/messages", res);
 		const sessionId = transport.sessionId;
+		console.log("Session ID:", sessionId);
 		transports.set(sessionId, transport);
 
 		res.on("close", () => {
+			console.log("SSE connection closed:", sessionId);
 			transports.delete(sessionId);
 		});
 
 		await server.connect(transport);
+		console.log("MCP server connected for session:", sessionId);
 	});
 
 	//Message endpoint for MCP
 	app.post("/messages", express.json(), async (req, res) => {
 		const sessionId = req.query.sessionId as string;
+		console.log("Message received for session:", sessionId, JSON.stringify(req.body));
 		const transport = transports.get(sessionId);
 
 		if (!transport) {
+			console.log("Session not found:", sessionId);
 			res.status(404).json({error: "Session not found"});
 			return;
 		}

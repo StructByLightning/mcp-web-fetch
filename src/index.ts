@@ -1,6 +1,7 @@
 #!/usr/bin/env node
+import {randomUUID} from "crypto";
 import {McpServer} from "@modelcontextprotocol/sdk/server/mcp.js";
-import {SSEServerTransport} from "@modelcontextprotocol/sdk/server/sse.js";
+import {StreamableHTTPServerTransport} from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import cors from "cors";
 import express from "express";
 import {chromium} from "playwright-extra";
@@ -160,7 +161,6 @@ async function fetchPage(url: string, waitTime: number = 3000): Promise<string> 
 	}
 }
 
-
 async function main() {
 	const app = express();
 	app.use(cors({
@@ -169,40 +169,84 @@ async function main() {
 	}));
 
 	//Store transports by session ID
-	const transports = new Map<string, SSEServerTransport>();
+	const transports = new Map<string, StreamableHTTPServerTransport>();
 
-	//SSE endpoint for MCP
-	app.get("/sse", async (_req, res) => {
-		console.log("SSE connection attempt");
-		const transport = new SSEServerTransport("/messages", res);
-		const sessionId = transport.sessionId;
-		console.log("Session ID:", sessionId);
-		transports.set(sessionId, transport);
+	//MCP endpoint - handles both GET (SSE) and POST (messages)
+	app.all("/mcp", async (req, res) => {
+		console.log(`${req.method} /mcp`);
 
-		const server = createServer();
+		const sessionId = req.headers["mcp-session-id"] as string | undefined;
+		console.log("Session ID from header:", sessionId);
 
-		res.on("close", () => {
-			console.log("SSE connection closed:", sessionId);
-			transports.delete(sessionId);
-		});
+		let transport: StreamableHTTPServerTransport;
 
-		await server.connect(transport);
-		console.log("MCP server connected for session:", sessionId);
-	});
+		if (sessionId && transports.has(sessionId)) {
+			//Reuse existing transport
+			transport = transports.get(sessionId)!;
+			console.log("Reusing existing transport for session:", sessionId);
+		} else if (!sessionId && req.method === "POST") {
+			//New session - create transport with session ID generator
+			transport = new StreamableHTTPServerTransport({
+				sessionIdGenerator: () => randomUUID(),
+			});
 
-	//Message endpoint for MCP
-	app.post("/messages", express.json(), async (req, res) => {
-		const sessionId = req.query.sessionId as string;
-		console.log("Message received for session:", sessionId, JSON.stringify(req.body));
-		const transport = transports.get(sessionId);
+			const server = createServer();
+			await server.connect(transport);
 
-		if (!transport) {
+			//Store transport once we know the session ID
+			const newSessionId = transport.sessionId;
+			if (newSessionId) {
+				transports.set(newSessionId, transport);
+				console.log("Created new transport with session:", newSessionId);
+			}
+
+			transport.onclose = () => {
+				if (newSessionId) {
+					console.log("Transport closed for session:", newSessionId);
+					transports.delete(newSessionId);
+				}
+			};
+		} else if (!sessionId && req.method === "GET") {
+			//GET without session - this is for SSE stream
+			transport = new StreamableHTTPServerTransport({
+				sessionIdGenerator: () => randomUUID(),
+			});
+
+			const server = createServer();
+			await server.connect(transport);
+
+			const newSessionId = transport.sessionId;
+			if (newSessionId) {
+				transports.set(newSessionId, transport);
+				console.log("Created new SSE transport with session:", newSessionId);
+			}
+
+			transport.onclose = () => {
+				if (newSessionId) {
+					console.log("SSE transport closed for session:", newSessionId);
+					transports.delete(newSessionId);
+				}
+			};
+		} else {
+			//Invalid session
 			console.log("Session not found:", sessionId);
 			res.status(404).json({error: "Session not found"});
 			return;
 		}
 
-		await transport.handlePostMessage(req, res);
+		//Let the transport handle the request
+		try {
+			await transport.handleRequest(req, res, req.body);
+			console.log("Request handled successfully");
+		} catch (err) {
+			console.error("Error handling request:", err);
+		}
+	});
+
+	//Also support /sse for backwards compatibility
+	app.get("/sse", async (_req, res) => {
+		console.log("Legacy /sse endpoint - redirecting to /mcp");
+		res.redirect(307, "/mcp");
 	});
 
 	//Health check
@@ -212,7 +256,7 @@ async function main() {
 
 	app.listen(PORT, () => {
 		console.log(`MCP web-fetch server running on http://localhost:${PORT}`);
-		console.log(`SSE endpoint: http://localhost:${PORT}/sse`);
+		console.log(`MCP endpoint: http://localhost:${PORT}/mcp`);
 	});
 }
 
